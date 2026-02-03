@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import {computed, onMounted, ref} from 'vue'
+import {computed, onMounted, reactive, ref} from 'vue'
 
-type MODE_T = "TIMER" | "SCORE";
+type MODE_T = "TIMER" | "SCORE" | "MATCH";
 type STATE_T = "IDLE" | "COUNTDOWN" | "RUNNING"
 
 const stageData = {
@@ -11,10 +11,34 @@ const stageData = {
   4: {name: "Final", duration: 90},
 }
 
+interface MatchVersus {
+  redTeam: {
+    team1Name: string;
+    team2Name: string;
+  } | {};
+  blueTeam: {
+    team1Name: string;
+    team2Name: string;
+  } | {};
+}
+
 interface SCOREELEMENT {
   name: string;
   pts: number;
   count: number;
+}
+
+interface IMATCHENTRY {
+  redTeam: {
+    team1Name: string;
+    team2Name: string;
+  };
+  blueTeam: {
+    team1Name: string;
+    team2Name: string;
+  };
+  matchNumber: number;
+  timestamp: number;
 }
 
 interface IAPPSTATE {
@@ -35,7 +59,9 @@ interface IAPPSTATE {
     penalty: number;
   };
   timer: number;
+  match: Array<MatchVersus>;
   history: IHISTORYENTRY[];
+  matchData: IMATCHENTRY[];
 }
 
 interface IHISTORYENTRY {
@@ -83,8 +109,29 @@ const bluePenalty = ref(0);
 const history = ref<IHISTORYENTRY[]>([]);
 const showHistory = ref(false);
 
+// Match Data page state
+const matchData = ref<IMATCHENTRY[]>([]);
+const matchForm = reactive({
+  matchNumber: 1,
+  redTeam1: "",
+  redTeam2: "",
+  blueTeam1: "",
+  blueTeam2: "",
+});
+const showDeleteModal = ref(false);
+const deleteIndex = ref<number | null>(null);
+
 const redScore = computed(() => redElements.value.reduce((sum, el) => sum + el.pts * el.count, 0) - (redPenalty.value * 50));
 const blueScore = computed(() => blueElements.value.reduce((sum, el) => sum + el.pts * el.count, 0) - (bluePenalty.value * 50));
+
+const redTeamMatch = reactive<Array<Pick<MatchVersus, "redTeam"> | {}>>([]);
+const blueTeamMatch = reactive<Array<Pick<MatchVersus, "blueTeam"> | {}>>([]);
+
+// Derived: next match number suggestion
+const nextMatchNumber = computed(() => {
+  if (matchData.value.length === 0) return 1;
+  return Math.max(...matchData.value.map(m => m.matchNumber)) + 1;
+});
 
 let countdownInterval: number;
 let timerInterval: number;
@@ -161,7 +208,9 @@ function saveToLocalStorage() {
       penalty: bluePenalty.value,
     },
     timer: timer.value,
+    match: [{redTeam: redTeamMatch, blueTeam: blueTeamMatch}],
     history: history.value,
+    matchData: matchData.value,
   };
   localStorage.setItem("appState", JSON.stringify(appState));
 }
@@ -199,6 +248,50 @@ function resetScore() {
   saveToLocalStorage();
 }
 
+// Match Data: add a new match entry
+function addMatchEntry() {
+  if (!matchForm.redTeam1 && !matchForm.redTeam2 && !matchForm.blueTeam1 && !matchForm.blueTeam2) return;
+
+  const entry: IMATCHENTRY = {
+    matchNumber: matchForm.matchNumber,
+    redTeam: {
+      team1Name: matchForm.redTeam1,
+      team2Name: matchForm.redTeam2,
+    },
+    blueTeam: {
+      team1Name: matchForm.blueTeam1,
+      team2Name: matchForm.blueTeam2,
+    },
+    timestamp: Date.now(),
+  };
+
+  matchData.value.push(entry);
+  saveToLocalStorage();
+
+  // Reset form, auto-increment match number
+  matchForm.matchNumber = nextMatchNumber.value;
+  matchForm.redTeam1 = "";
+  matchForm.redTeam2 = "";
+  matchForm.blueTeam1 = "";
+  matchForm.blueTeam2 = "";
+}
+
+// Match Data: open delete confirmation
+function confirmDeleteMatch(index: number) {
+  deleteIndex.value = index;
+  showDeleteModal.value = true;
+}
+
+// Match Data: execute delete
+function deleteMatchEntry() {
+  if (deleteIndex.value !== null) {
+    matchData.value.splice(deleteIndex.value, 1);
+    saveToLocalStorage();
+  }
+  showDeleteModal.value = false;
+  deleteIndex.value = null;
+}
+
 onMounted(() => {
   const storage = JSON.parse(localStorage.getItem("appState") || {} as string) as IAPPSTATE;
   if (storage) {
@@ -217,7 +310,18 @@ onMounted(() => {
       if (storage.blueTeam.elements) blueElements.value = storage.blueTeam.elements;
       if (storage.blueTeam.penalty !== undefined) bluePenalty.value = storage.blueTeam.penalty;
     }
+    if (storage.match) {
+      storage.match.forEach((m: MatchVersus) => {
+        if (m.redTeam) redTeamMatch.push(m.redTeam);
+        if (m.blueTeam) blueTeamMatch.push(m.blueTeam);
+      });
+    }
+    ;
     if (storage.history) history.value = storage.history;
+    if (storage.matchData) {
+      matchData.value = storage.matchData;
+      matchForm.matchNumber = nextMatchNumber.value;
+    }
   }
 })
 </script>
@@ -261,10 +365,13 @@ onMounted(() => {
               </label>
             </div>
 
-            <div class="hidden flex-none lg:block">
-              <ul class="menu menu-horizontal rounded-box bg-base-100/60 backdrop-blur px-2">
-                <li><a @click="mode = 'TIMER'">Timer</a></li>
-                <li><a @click="mode = 'SCORE'">Score Sheet</a></li>
+            <!-- NAV -->
+            <div class="hidden flex-none lg:block ">
+              <ul class="menu menu-horizontal rounded-box bg-base-100/60 backdrop-blur px-2 gap-2">
+                <li class="btn btn-primary"><a @click="mode = 'TIMER'">Timer</a></li>
+                <li class="btn btn-primary"><a @click="mode = 'SCORE'">Score Sheet</a></li>
+                <li class="btn btn-primary"><a @click="mode = 'MATCH'">Match Data</a></li>
+                <li class="btn btn-warning"><a @click="clearTimer()">Clear Timer</a></li>
               </ul>
             </div>
           </div>
@@ -325,7 +432,7 @@ onMounted(() => {
           </div>
 
           <!-- SCORE PAGE -->
-          <div class="w-full max-w-6xl px-4" v-else>
+          <div class="w-full max-w-6xl px-4" v-else-if="mode === 'SCORE'">
             <div class="flex flex-col lg:flex-row gap-4 items-stretch">
 
               <!-- RED ALLIANCE -->
@@ -371,7 +478,10 @@ onMounted(() => {
                           class="w-16 rounded-lg bg-white/20 border border-white/30 text-white text-center text-sm font-black focus:outline-none focus:ring-2 focus:ring-white/50 py-1"
                       />
                     </div>
-                    <div class="text-sm font-black text-yellow-200 text-center tabular-nums">{{ -(redPenalty * 50) }}</div>
+                    <div class="text-sm font-black text-yellow-200 text-center tabular-nums">{{
+                        -(redPenalty * 50)
+                      }}
+                    </div>
                   </div>
                 </div>
 
@@ -401,7 +511,9 @@ onMounted(() => {
 
               <!-- VS BADGE -->
               <div class="flex items-center justify-center">
-                <div class="text-4xl font-black text-transparent bg-clip-text bg-gradient-to-b from-orange-400 to-red-600 drop-shadow-lg" style="text-shadow: 0 2px 8px rgba(0,0,0,0.3);">
+                <div
+                    class="text-4xl font-black text-transparent bg-clip-text bg-gradient-to-b from-orange-400 to-red-600 drop-shadow-lg"
+                    style="text-shadow: 0 2px 8px rgba(0,0,0,0.3);">
                   VS
                 </div>
               </div>
@@ -449,7 +561,10 @@ onMounted(() => {
                           class="w-16 rounded-lg bg-white/20 border border-white/30 text-white text-center text-sm font-black focus:outline-none focus:ring-2 focus:ring-white/50 py-1"
                       />
                     </div>
-                    <div class="text-sm font-black text-yellow-200 text-center tabular-nums">{{ -(bluePenalty * 50) }}</div>
+                    <div class="text-sm font-black text-yellow-200 text-center tabular-nums">{{
+                        -(bluePenalty * 50)
+                      }}
+                    </div>
                   </div>
                 </div>
 
@@ -501,12 +616,158 @@ onMounted(() => {
               </button>
             </div>
           </div>
+
+          <!-- MATCH DATA PAGE -->
+          <div class="w-full max-w-4xl px-4" v-else-if="mode === 'MATCH'">
+            <div class="flex flex-col items-center gap-6">
+              <!-- INPUT FORM CARD -->
+              <div class="w-full rounded-3xl bg-base-100 shadow-xl p-5">
+                <h2 class="text-lg font-black text-black mb-4">Add Match</h2>
+
+                <!-- Match Number -->
+                <div class="mb-4">
+                  <div class="text-xs font-black text-black/60 mb-1">Match Number</div>
+                  <input
+                      type="number"
+                      min="1"
+                      v-model.number="matchForm.matchNumber"
+                      class="w-24 rounded-xl bg-base-200 text-black text-sm font-bold px-3 py-2 focus:outline-none focus:ring-2 focus:ring-error/50"
+                  />
+                </div>
+
+                <!-- Red vs Blue row -->
+                <div class="flex flex-col sm:flex-row gap-4 items-stretch">
+
+                  <!-- Red Alliance Inputs -->
+                  <div class="flex-1 rounded-2xl bg-red-500/10 border border-red-500/30 p-4">
+                    <div class="text-sm font-black text-red-500 mb-2">RED ALLIANCE</div>
+                    <input
+                        type="text"
+                        v-model="matchForm.redTeam1"
+                        placeholder="Team 1"
+                        class="w-full rounded-xl bg-white border border-red-200 text-black text-sm font-bold px-3 py-2 mb-2 focus:outline-none focus:ring-2 focus:ring-red-400/50"
+                    />
+                    <input
+                        type="text"
+                        v-model="matchForm.redTeam2"
+                        placeholder="Team 2"
+                        class="w-full rounded-xl bg-white border border-red-200 text-black text-sm font-bold px-3 py-2 focus:outline-none focus:ring-2 focus:ring-red-400/50"
+                    />
+                  </div>
+
+                  <!-- VS Label -->
+                  <div class="flex items-center justify-center">
+                    <div
+                        class="text-2xl font-black text-transparent bg-clip-text bg-gradient-to-b from-orange-400 to-red-600 drop-shadow-lg"
+                        style="text-shadow: 0 2px 8px rgba(0,0,0,0.3);">
+                      VS
+                    </div>
+                  </div>
+
+                  <!-- Blue Alliance Inputs -->
+                  <div class="flex-1 rounded-2xl bg-blue-500/10 border border-blue-500/30 p-4">
+                    <div class="text-sm font-black text-blue-500 mb-2">BLUE ALLIANCE</div>
+                    <input
+                        type="text"
+                        v-model="matchForm.blueTeam1"
+                        placeholder="Team 3"
+                        class="w-full rounded-xl bg-white border border-blue-200 text-black text-sm font-bold px-3 py-2 mb-2 focus:outline-none focus:ring-2 focus:ring-blue-400/50"
+                    />
+                    <input
+                        type="text"
+                        v-model="matchForm.blueTeam2"
+                        placeholder="Team 4"
+                        class="w-full rounded-xl bg-white border border-blue-200 text-black text-sm font-bold px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-400/50"
+                    />
+                  </div>
+                </div>
+
+                <!-- Add Button -->
+                <div class="mt-4 flex justify-end">
+                  <button
+                      class="btn btn-success rounded-full px-8 shadow text-white"
+                      @click="addMatchEntry"
+                  >
+                    Add Match
+                  </button>
+                </div>
+              </div>
+
+              <!-- MATCH TABLE -->
+              <div class="w-full rounded-3xl bg-base-100 shadow-xl overflow-hidden">
+                <div class="px-5 py-4 flex items-center justify-between">
+                  <h2 class="text-lg font-black text-black">Match List</h2>
+                  <div class="text-xs font-bold text-black/40">{{ matchData.length }}
+                    match{{ matchData.length !== 1 ? 'es' : '' }}
+                  </div>
+                </div>
+
+                <div v-if="matchData.length === 0" class="text-center text-black/40 font-bold py-10">
+                  No matches added yet.
+                </div>
+
+                <div v-else class="overflow-x-auto">
+                  <table class="table w-full">
+                    <thead>
+                    <tr class="bg-base-200">
+                      <th class="text-xs font-black text-black/60 text-left px-5 py-3">#</th>
+                      <th class="text-xs font-black text-red-500 text-left px-5 py-3">RED ALLIANCE</th>
+                      <th class="text-xs font-black text-black/40 text-center px-2 py-3"></th>
+                      <th class="text-xs font-black text-blue-500 text-left px-5 py-3">BLUE ALLIANCE</th>
+                      <th class="text-xs font-black text-black/40 text-right px-5 py-3">Actions</th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    <tr
+                        v-for="(entry, index) in matchData"
+                        :key="index"
+                        class="border-t border-base-200"
+                    >
+                      <!-- Match Number -->
+                      <td class="px-5 py-3">
+                        <div class="text-sm font-black text-black">{{ entry.matchNumber }}</div>
+                      </td>
+
+                      <!-- Red Alliance -->
+                      <td class="px-5 py-3">
+                        <div class="text-sm font-bold text-black">{{ entry.redTeam.team1Name || '—' }}</div>
+                        <div class="text-xs font-bold text-black/40">&amp; {{ entry.redTeam.team2Name || '—' }}</div>
+                      </td>
+
+                      <!-- VS -->
+                      <td class="text-center px-2 py-3">
+                        <div class="text-xs font-black text-black/30">VS</div>
+                      </td>
+
+                      <!-- Blue Alliance -->
+                      <td class="px-5 py-3">
+                        <div class="text-sm font-bold text-black">{{ entry.blueTeam.team1Name || '—' }}</div>
+                        <div class="text-xs font-bold text-black/40">&amp; {{ entry.blueTeam.team2Name || '—' }}</div>
+                      </td>
+
+                      <!-- Delete -->
+                      <td class="px-5 py-3 text-right">
+                        <button
+                            class="btn btn-ghost btn-xs text-error hover:bg-error/10"
+                            @click="confirmDeleteMatch(index)"
+                        >
+                          Delete
+                        </button>
+                      </td>
+                    </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
 
         <!-- HISTORY MODAL -->
         <div v-if="showHistory" class="fixed inset-0 z-50 flex items-center justify-center">
           <div class="absolute inset-0 bg-black/40" @click="showHistory = false"></div>
-          <div class="relative z-10 w-full max-w-2xl max-h-[80vh] overflow-y-auto rounded-3xl bg-base-100 shadow-2xl p-6">
+          <div
+              class="relative z-10 w-full max-w-2xl max-h-[80vh] overflow-y-auto rounded-3xl bg-base-100 shadow-2xl p-6">
 
             <div class="flex items-center justify-between mb-4">
               <h2 class="text-2xl font-black tracking-tight text-black ">Match History</h2>
@@ -526,7 +787,8 @@ onMounted(() => {
               <div class="flex items-center justify-between mb-3">
                 <div class="text-lg font-black text-black">Match {{ index + 1 }}</div>
                 <div class="text-xs font-bold text-black/40">
-                  {{ new Date(entry.timestamp).toLocaleDateString() }}, {{ new Date(entry.timestamp).toLocaleTimeString() }}
+                  {{ new Date(entry.timestamp).toLocaleDateString() }},
+                  {{ new Date(entry.timestamp).toLocaleTimeString() }}
                 </div>
               </div>
 
@@ -551,11 +813,13 @@ onMounted(() => {
                           ? 'bg-blue-100 text-blue-600'
                           : 'bg-base-200 text-black/60'"
                   >
-                    {{ entry.redTeam.score > entry.blueTeam.score
-                      ? 'Winner: Red Alliance'
-                      : entry.blueTeam.score > entry.redTeam.score
-                          ? 'Winner: Blue Alliance'
-                          : 'Draw' }}
+                    {{
+                      entry.redTeam.score > entry.blueTeam.score
+                          ? 'Winner: Red Alliance'
+                          : entry.blueTeam.score > entry.redTeam.score
+                              ? 'Winner: Blue Alliance'
+                              : 'Draw'
+                    }}
                   </div>
                 </div>
 
@@ -572,7 +836,29 @@ onMounted(() => {
 
           </div>
         </div>
-        <div class="relative z-10 px-6 pb-24">
+
+        <!-- DELETE CONFIRMATION MODAL -->
+        <div v-if="showDeleteModal" class="fixed inset-0 z-50 flex items-center justify-center">
+          <div class="absolute inset-0 bg-black/40" @click="showDeleteModal = false"></div>
+          <div class="relative z-10 w-full max-w-sm rounded-3xl bg-base-100 shadow-2xl p-6">
+            <div class="flex items-center justify-between mb-4">
+              <h2 class="text-lg font-black tracking-tight text-black">Delete Match</h2>
+              <button class="btn btn-ghost btn-sm" @click="showDeleteModal = false">✕</button>
+            </div>
+            <div class="text-sm font-bold text-black/60 mb-6">
+              Are you sure you want to delete Match {{
+                deleteIndex !== null ? matchData[deleteIndex]?.matchNumber : ''
+              }}? This cannot be undone.
+            </div>
+            <div class="flex justify-end gap-3">
+              <button class="btn btn-neutral rounded-full px-6" @click="showDeleteModal = false">Cancel</button>
+              <button class="btn btn-error rounded-full px-6 text-white" @click="deleteMatchEntry">Delete</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- STAGE CARDS -->
+        <div class="relative z-10 px-6 pb-24" v-if="mode === 'TIMER'">
           <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <div
                 class="rounded-3xl p-5 text-white shadow-xl"
@@ -648,22 +934,23 @@ onMounted(() => {
           </div>
         </div>
 
-        <div class="absolute bottom-0 left-0 right-0 z-10">
-          <div
-              class="bg-red-500 py-5 text-center text-white font-extrabold tracking-widest shadow-[0_-8px_30px_rgba(0,0,0,0.18)]">
-            ASSUMPTION COLLEGE SAMUTPRAKARN
-            <div class="mt-1 text-xs font-black opacity-90">MAKEX D WA</div>
-          </div>
+        <!-- FOOTER -->
+        <div
+            class="bg-red-500 py-5 text-center text-white font-extrabold tracking-widest shadow-[0_-8px_30px_rgba(0,0,0,0.18)]">
+          ASSUMPTION COLLEGE SAMUTPRAKARN
+          <div class="mt-1 text-xs font-black opacity-90">MAKEX D WA</div>
         </div>
       </div>
     </div>
 
+    <!-- MOBILE NAV -->
     <div class="drawer-side">
       <label for="my-drawer-2" aria-label="close sidebar" class="drawer-overlay"></label>
       <ul class="menu bg-base-200 min-h-full w-80 p-4">
         <li class="menu-title"><span>ACSP MakeX Challenge</span></li>
         <li><a @click="mode = 'TIMER'">Timer</a></li>
         <li><a @click="mode = 'SCORE'">Score Sheet</a></li>
+        <li><a @click="mode = 'MATCH'">Match Data</a></li>
         <li class="mt-2"><a @click="clearTimer()">Clear Timer</a></li>
       </ul>
     </div>
